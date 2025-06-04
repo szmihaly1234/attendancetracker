@@ -4,10 +4,6 @@ import requests
 import re
 import base64
 from datetime import datetime
-import time
-import gspread
-from google.oauth2 import service_account
-from google.oauth2.service_account import Credentials
 
 # Oldal beállítások
 st.set_page_config(
@@ -17,24 +13,12 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Konfiguráció
-st.session_state.setdefault('players', [])
-st.session_state.setdefault('attendance_records', [])
-st.session_state.setdefault('google_sheets_connected', False)
+# Session state inicializálás
+if 'players' not in st.session_state:
+    st.session_state.players = []
 
-# Titkos kulcsok kezelése
-def get_secrets():
-    """Beolvassa a titkos kulcsokat a Streamlit secrets-ből"""
-    try:
-        return {
-            "WCL_API_KEY": st.secrets["WCL_API_KEY"],
-            "GOOGLE_CREDS": st.secrets["google_credentials"]
-        }
-    except:
-        st.warning("Nem találhatóak titkos kulcsok. Kérlek állítsd be a Streamlit Secrets-t!")
-        return {}
-
-SECRETS = get_secrets()
+if 'attendance_records' not in st.session_state:
+    st.session_state.attendance_records = []
 
 # Helper függvények
 def extract_report_id(url):
@@ -44,9 +28,9 @@ def extract_report_id(url):
 
 def get_participants_from_log(report_id):
     """Lekéri a résztvevőket a Warcraft Logs API-ról"""
-    if not SECRETS.get("WCL_API_KEY"):
+    if not st.secrets.get("WCL_API_KEY"):
         st.error("Warcraft Logs API kulcs nincs beállítva!")
-        return []
+        return [], None, None
     
     query = f"""
     {{
@@ -73,8 +57,8 @@ def get_participants_from_log(report_id):
             response = requests.post(
                 'https://www.warcraftlogs.com/api/v2/client',
                 json={'query': query},
-                headers={'Authorization': f'Bearer {SECRETS["WCL_API_KEY"]}'},
-                timeout=10
+                headers={'Authorization': f'Bearer {st.secrets["WCL_API_KEY"]}'},
+                timeout=15
             )
             data = response.json()
         
@@ -128,22 +112,6 @@ def to_csv_download_link(df, filename):
     href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">📥 {filename} letöltése</a>'
     return href
 
-def connect_google_sheets():
-    """Kapcsolódás a Google Sheets-hez"""
-    if not SECRETS.get("GOOGLE_CREDS"):
-        st.error("Google Sheets hitelesítés nincs beállítva!")
-        return None
-    
-    try:
-        creds_info = SECRETS["GOOGLE_CREDS"]
-        creds = Credentials.from_service_account_info(creds_info)
-        client = gspread.authorize(creds)
-        st.session_state.google_sheets_connected = True
-        return client
-    except Exception as e:
-        st.error(f"Hiba a Google Sheets kapcsolódás során: {str(e)}")
-        return None
-
 # UI Komponensek
 def player_management_section():
     """Játékoskezelő szekció"""
@@ -184,22 +152,6 @@ def player_management_section():
                     st.session_state.players.pop(i)
                     st.experimental_rerun()
     
-    # Google Sheets integráció
-    st.sidebar.subheader("Google Sheets Integráció")
-    
-    if st.sidebar.button("🔗 Kapcsolódás Google Sheets-hez"):
-        connect_google_sheets()
-    
-    if st.session_state.get('google_sheets_connected'):
-        st.sidebar.success("Sikeresen kapcsolódva Google Sheets-hez!")
-        
-        sheet_url = st.sidebar.text_input("Google Sheet URL", 
-                                         placeholder="https://docs.google.com/spreadsheets/d/...")
-        sheet_name = st.sidebar.text_input("Munkalap neve", "Roster")
-        
-        if st.sidebar.button("📥 Roster importálása Google Sheets-ből"):
-            import_roster_from_google(sheet_url, sheet_name)
-    
     # Import/Export
     st.sidebar.subheader("Adatkezelés")
     
@@ -225,43 +177,6 @@ def player_management_section():
         except Exception as e:
             st.sidebar.error(f"Hiba történt az importálás során: {str(e)}")
 
-def import_roster_from_google(sheet_url, sheet_name):
-    """Roster importálása Google Sheets-ből"""
-    if not st.session_state.get('google_sheets_connected'):
-        st.error("Először kapcsolódj a Google Sheets-hez!")
-        return
-    
-    try:
-        client = gspread.authorize(Credentials.from_service_account_info(SECRETS["GOOGLE_CREDS"]))
-        
-        # Sheet megnyitása
-        spreadsheet = client.open_by_url(sheet_url)
-        worksheet = spreadsheet.worksheet(sheet_name)
-        
-        # Adatok lekérése
-        data = worksheet.get_all_records()
-        
-        if not data:
-            st.warning("Nincsenek adatok a munkalapon!")
-            return
-        
-        # Adatok feldolgozása
-        players = []
-        for row in data:
-            if 'Player' in row and 'Characters' in row:
-                characters = [c.strip() for c in str(row['Characters']).split(",") if c.strip()]
-                players.append({
-                    'name': row['Player'],
-                    'characters': characters
-                })
-        
-        st.session_state.players = players
-        st.success(f"{len(players)} játékos importálva Google Sheets-ből!")
-        st.experimental_rerun()
-        
-    except Exception as e:
-        st.error(f"Hiba történt az importálás során: {str(e)}")
-
 def log_analysis_section():
     """Log elemző szekció"""
     st.header("📜 Log elemzés")
@@ -283,7 +198,7 @@ def log_analysis_section():
             if report_id:
                 st.info(f"Report ID: `{report_id}`")
                 
-                if st.button("Résztvevők lekérése", disabled=not SECRETS.get("WCL_API_KEY")):
+                if st.button("Résztvevők lekérése", disabled=not st.secrets.get("WCL_API_KEY")):
                     participants, title, info = get_participants_from_log(report_id)
                     
                     if participants:
@@ -379,22 +294,15 @@ def user_guide_section():
         1. A Streamlit Cloud-on nyisd meg az alkalmazás beállításait
         2. Lépj a "Secrets" fülre
         3. Illeszd be a következő formátumban:
-        ```
-        [secrets]
+        ```toml
+        # .streamlit/secrets.toml
         WCL_API_KEY = "az_api_kulcsod"
-        
-        [google_credentials]
-        type = "service_account"
-        project_id = "projekt_id"
-        private_key_id = "private_key_id"
-        private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
-        client_email = "email@projekt.iam.gserviceaccount.com"
-        client_id = "1234567890"
-        auth_uri = "https://accounts.google.com/o/oauth2/auth"
-        token_uri = "https://oauth2.googleapis.com/token"
-        auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
-        client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/email%40projekt.iam.gserviceaccount.com"
         ```
+        
+        ### 💾 Adatkezelés
+        - Az adatok a böngésződben (local storage) tárolódnak
+        - Exportálhatod és importálhatod a rosteredet CSV formátumban
+        - Az előzményeket bármikor visszanézheted
         """)
         
         st.image("https://i.imgur.com/7QZ4D3e.png", caption="Warcraft Logs report példa", width=300)
